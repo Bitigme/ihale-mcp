@@ -352,6 +352,99 @@ async def get_tender_details(
     }
 
 
+@mcp.tool
+async def search_direct_procurements(
+    search_text: Annotated[str, "Search term for Direct Procurement (Doğrudan Temin)"] = "",
+    page_index: Annotated[int, "Page index (Sayfa indeksi) 1-n"] = 1,
+    order_by: Annotated[int, "Sort key (Sıralama): e.g., 10=DT No desc"] = 10,
+    year: Annotated[Optional[int], "DT year (Yıl), e.g., 2025 (API uses two digits)"] = None,
+    dt_no: Annotated[Optional[str], "DT reference (DT No) combined, e.g., 25DT1493794"] = None,
+    dt_number: Annotated[Optional[int], "DT number (DT Sayı), e.g., 1493794"] = None,
+    dt_type: Annotated[Optional[Literal[1, 2, 3, 4]], "DT type (Doğrudan Temin Türü): 1=Goods (Mal), 2=Construction (Yapım), 3=Service (Hizmet), 4=Consultancy (Danışmanlık)"] = None,
+    e_price_offer: Annotated[Optional[bool], "E-Price Offer (E-Fiyat Teklifi) eihale"] = None,
+    status_id: Annotated[Optional[int], "Status ID (Doğrudan Temin Durumu): 202,3,4,5,15"] = None,
+    status_text: Annotated[Optional[str], "Status text (Durum), e.g., 'Bids Under Evaluation (Teklifler Değerlendiriliyor)'"] = None,
+    date_start: Annotated[Optional[str], "Offer due start (Teklif tarihi başlangıcı) YYYY-MM-DD"] = None,
+    date_end: Annotated[Optional[str], "Offer due end (Teklif tarihi bitişi) YYYY-MM-DD"] = None,
+    province_plate: Annotated[Optional[int], "Authority province plate (İl plaka kodu) 1-81"] = None,
+    province_name: Annotated[Optional[str], "Authority province name (İl adı), e.g., 'Antalya'"] = None,
+    scope_id: Annotated[Optional[int], "Scope ID (Doğrudan Temin Kapsamı): 101/102/103"] = None,
+    scope_text: Annotated[Optional[str], "Scope text (Kapsam), e.g., 'Within Law 4734 (4734 Kapsamında)'"] = None,
+    authority_id: Annotated[Optional[int], "Authority token (İdare ID token) from idareAra"] = None,
+    parent_authority_code: Annotated[Optional[str], "Parent Authority (Bağlı Olduğu Üst İdare) ustIdareKod"] = None,
+    top_authority_code: Annotated[Optional[str], "Top Authority (Bağlı Olduğu En Üst İdare) enUstIdareKod"] = None,
+    cookies: Annotated[Optional[str], "Cookie header (Çerez) for EKAP session (optional)"] = None,
+) -> Dict[str, Any]:
+    """
+    Search Direct Procurements (Doğrudan Temin) via EKAP (YeniIhaleAramaData.ashx, metot=dtAra).
+    Returns: dt_no, title, authority, type, due_datetime, announcement_date, province_plate, has_announcement, has_document.
+    """
+    return await ekap_client.search_direct_procurements(
+        search_text=search_text,
+        page_index=page_index,
+        order_by=order_by,
+        year=year,
+        dt_no=dt_no,
+        dt_number=dt_number,
+        dt_type=dt_type,
+        e_price_offer=e_price_offer,
+        status_id=status_id,
+        status_text=status_text,
+        date_start=date_start,
+        date_end=date_end,
+        province_plate=province_plate,
+        province_name=province_name,
+        scope_id=scope_id,
+        scope_text=scope_text,
+        authority_id=authority_id,
+        parent_authority_code=parent_authority_code,
+        top_authority_code=top_authority_code,
+        cookies=cookies,
+    )
+
+
+@mcp.tool
+async def get_direct_procurement_details(
+    dogrudan_temin_id: Annotated[str, "E10 token (dogrudanTeminId) from list (liste)"],
+    idare_id: Annotated[str, "E11 token (idareId) from list (liste)"],
+    cookies: Annotated[Optional[str], "Cookie header (Çerez) for EKAP session (optional)"] = None,
+) -> Dict[str, Any]:
+    """
+    Get Direct Procurement (Doğrudan Temin) details (dtDetayGetir) using tokens.
+    """
+    return await ekap_client.get_direct_procurement_details(
+        dogrudan_temin_id=dogrudan_temin_id,
+        idare_id=idare_id,
+        cookies=cookies,
+    )
+
+@mcp.tool
+async def search_direct_procurement_authorities(
+    search_term: Annotated[str, "Authority search term (İdare arama), e.g., 'antalya' or institution name"] = "",
+    cookies: Annotated[Optional[str], "Cookie header (Çerez) for EKAP session (optional)"] = None,
+) -> Dict[str, Any]:
+    """
+    Search authorities (İdare) for Direct Procurement (idareAra). Use returned 'token' as idareId.
+    """
+    return await ekap_client.search_direct_procurement_authorities(
+        search_term=search_term,
+        cookies=cookies,
+    )
+
+@mcp.tool
+async def search_direct_procurement_parent_authorities(
+    search_term: Annotated[str, "Parent authority search (Bağlı Olduğu Üst İdare), e.g., 'antalya'"] = "",
+    cookies: Annotated[Optional[str], "Cookie header (Çerez) for EKAP session (optional)"] = None,
+) -> Dict[str, Any]:
+    """
+    Search parent authorities (Üst İdare) via ustIdareAra. Pass returned 'token' to parent_authority_code (ustIdareKod).
+    """
+    return await ekap_client.search_direct_procurement_parent_authorities(
+        search_term=search_term,
+        cookies=cookies,
+    )
+
+
 
 def main():
     """Main entry point for the MCP server"""

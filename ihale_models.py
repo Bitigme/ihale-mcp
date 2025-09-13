@@ -287,3 +287,54 @@ ANNOUNCEMENT_TYPES = {
     5: "Ön Yeterlik İlanı",
     6: "Düzeltme İlanı"
 }
+
+# Direct Procurement (Doğrudan Temin) Types
+DIRECT_PROCUREMENT_TYPES = {
+    1: "Mal",
+    2: "Yapım",
+    3: "Hizmet",
+    4: "Danışmanlık",
+}
+
+# Direct Procurement Statuses (best-known mapping)
+DIRECT_PROCUREMENT_STATUSES = {
+    202: "Doğrudan Temin Duyurusu Yayımlanmış",
+    3: "Teklifler Değerlendiriliyor",
+    4: "Doğrudan Temin Sonuçlandırıldı",
+    5: "Sonuç Bilgileri Gönderildi",
+    15: "Sonuç Duyurusu Yayımlanmış",
+}
+
+# Optional: additional text aliases → status id (lowercase keys)
+DIRECT_PROCUREMENT_STATUS_ALIASES = {
+    "doğrudan temin duyurusu": 202,
+    "doğrudan temin duyurusu yayımlanmış": 202,
+    "teklifler değerlendiriliyor": 3,
+    "doğrudan temin sonuçlandırıldı": 4,
+    "sonuç bilgileri gönderildi": 5,
+    "sonuç duyurusu": 15,
+    "sonuç duyurusu yayımlanmış": 15,
+}
+
+# Direct Procurement Scopes (best-known mapping)
+DIRECT_PROCUREMENT_SCOPES = {
+    101: "4734 Kapsamında",
+    102: "İstisna",
+    103: "Kapsam Dışı",
+}
+
+# Optional text aliases → scope id (lowercase keys)
+DIRECT_PROCUREMENT_SCOPE_ALIASES = {
+    "4734 kapsaminda": 101,
+    "4734 kapsamında": 101,
+    "istisna": 102,
+    "kapsam dışı": 103,
+    "kapsam disi": 103,
+}
+
+# Province name -> plate helper map (computed from PLATE_TO_API_ID + PROVINCES)
+NAME_TO_PLATE = {}
+for _plate, _api_id in PLATE_TO_API_ID.items():
+    _prov = PROVINCES.get(_api_id)
+    if _prov and getattr(_prov, 'name', None):
+        NAME_TO_PLATE[_prov.name.upper()] = _plate

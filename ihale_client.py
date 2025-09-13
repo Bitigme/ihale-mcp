@@ -9,6 +9,14 @@ from typing import Dict, Any, Optional, List, Literal
 from datetime import datetime
 from io import BytesIO
 from markitdown import MarkItDown
+from ihale_models import (
+    DIRECT_PROCUREMENT_TYPES,
+    DIRECT_PROCUREMENT_STATUSES,
+    DIRECT_PROCUREMENT_SCOPES,
+    NAME_TO_PLATE,
+    DIRECT_PROCUREMENT_STATUS_ALIASES,
+    DIRECT_PROCUREMENT_SCOPE_ALIASES,
+)
 
 class EKAPClient:
     """Client for EKAP v2 API"""
@@ -21,6 +29,8 @@ class EKAPClient:
         self.announcements_endpoint = "/b_ihalearama/api/Ilan/GetList"
         self.tender_details_endpoint = "/b_ihalearama/api/IhaleDetay/GetByIhaleIdIhaleDetay"
         self.document_url_endpoint = "/b_ihalearama/api/EkapDokumanYonlendirme/GetDokumanUrl"
+        # Direct Procurement (Doğrudan Temin) legacy endpoint (GET)
+        self.direct_procurement_url = "https://ekap.kik.gov.tr/EKAP/Ortak/YeniIhaleAramaData.ashx"
         
         # Common headers for all requests
         self.headers = {
@@ -72,6 +82,172 @@ class EKAPClient:
             return dt.strftime("%d.%m.%Y")
         except ValueError:
             return None
+
+    async def _make_get_request_full_url(
+        self,
+        url: str,
+        params: dict,
+        headers: Optional[Dict[str, str]] = None,
+        cookies: Optional[Any] = None,
+    ) -> dict:
+        """Make a GET request to a full URL (used for legacy EKAP endpoints).
+
+        cookies: can be a cookie header string or a dict suitable for httpx.
+        """
+        ssl_context = self._create_ssl_context()
+        req_headers = {
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Encoding': 'identity',
+            'Connection': 'keep-alive',
+            'Referer': 'https://ekap.kik.gov.tr/EKAP/YeniIhaleArama.aspx',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+            'sec-ch-ua': '"Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"macOS"'
+        }
+        if headers:
+            req_headers.update(headers)
+        async with httpx.AsyncClient(
+            timeout=30.0,
+            verify=ssl_context,
+            http2=False,
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
+        ) as client:
+            # If cookies is a string, set Cookie header; if dict, pass to client
+            request_headers = dict(req_headers)
+            httpx_cookies = None
+            if isinstance(cookies, str) and cookies.strip():
+                request_headers['Cookie'] = cookies
+            elif isinstance(cookies, dict):
+                httpx_cookies = cookies
+            # First attempt
+            response = await client.get(url, params=params, headers=request_headers, cookies=httpx_cookies, follow_redirects=False)
+            # If redirected to error page, try warming up to obtain cookies and retry once
+            if response.status_code == 302 and '/EKAP/error_page.html' in response.headers.get('location', '') and not cookies:
+                await self._warmup_legacy_ekap(client)
+                response = await client.get(url, params=params, headers=req_headers, follow_redirects=False)
+            response.raise_for_status()
+            return response.json()
+
+    async def _warmup_legacy_ekap(self, client: httpx.AsyncClient) -> None:
+        """Warm-up request to EKAP legacy page to obtain session cookies."""
+        try:
+            await client.get(
+                'https://ekap.kik.gov.tr/EKAP/YeniIhaleArama.aspx',
+                headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+                    'Connection': 'keep-alive',
+                },
+                follow_redirects=True,
+            )
+        except Exception:
+            pass
+        
+        # Try authority search page as alternative warm-up
+        try:
+            await client.get(
+                'https://ekap.kik.gov.tr/EKAP/Ortak/YeniIhaleAramaData.ashx',
+                params={"metot": "idareAra", "aranan": "a"},
+                headers={
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Language': 'tr-TR,tr;q=0.9',
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+                    'Connection': 'keep-alive',
+                },
+                follow_redirects=True,
+            )
+        except Exception:
+            pass
+
+    async def search_direct_procurement_authorities(
+        self,
+        search_term: str,
+        cookies: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Search authorities for Direct Procurement filter (legacy idareAra).
+
+        Returns list of { token, name } where token is the encrypted idareId (A) and name is D.
+        """
+        params = {
+            "metot": "idareAra",
+            "aranan": search_term or "",
+            "ES": "",
+            "ihaleidListesi": "",
+        }
+        try:
+            data = await self._make_get_request_full_url(
+                self.direct_procurement_url,
+                params=params,
+                cookies=cookies,
+            )
+            items = data.get("idareAramaResultList", [])
+            results = []
+            for it in items:
+                results.append({
+                    "token": it.get("A"),
+                    "name": it.get("D"),
+                })
+            return {
+                "authorities": results,
+                "returned_count": len(results),
+                "search_term": search_term,
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "error": f"Authority search failed with status {e.response.status_code}",
+                "message": str(e)
+            }
+        except Exception as e:
+            return {
+                "error": "Authority search failed",
+                "message": str(e)
+            }
+
+    async def search_direct_procurement_parent_authorities(
+        self,
+        search_term: str,
+        cookies: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Search parent authorities (üst idare) for Direct Procurement (ustIdareAra).
+
+        Returns list of { token, name } where token is the code used as 'ustIdareKod' (e.g., '44|07').
+        """
+        params = {
+            "metot": "ustIdareAra",
+            "aranan": search_term or "",
+            "ES": "",
+            "ihaleidListesi": "",
+        }
+        try:
+            data = await self._make_get_request_full_url(
+                self.direct_procurement_url,
+                params=params,
+                cookies=cookies,
+            )
+            items = data.get("ustIdareAramaResultList", [])
+            results = []
+            for it in items:
+                results.append({
+                    "token": it.get("A"),
+                    "name": it.get("D"),
+                })
+            return {
+                "parent_authorities": results,
+                "returned_count": len(results),
+                "search_term": search_term,
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "error": f"Parent authority search failed with status {e.response.status_code}",
+                "message": str(e)
+            }
+        except Exception as e:
+            return {
+                "error": "Parent authority search failed",
+                "message": str(e)
+            }
     
     async def search_tenders(
         self,
@@ -787,6 +963,274 @@ class EKAPClient:
         except Exception as e:
             return {
                 "error": "Request failed - tender document URL",
+                "message": str(e),
+                "success": False
+            }
+
+    async def search_direct_procurements(
+        self,
+        search_text: str = "",
+        search_in_description: bool = True,
+        search_in_name: bool = True,
+        search_in_info: bool = True,
+        page_index: int = 1,
+        order_by: int = 10,
+        year: Optional[int] = None,
+        dt_no: Optional[str] = None,
+        dt_number: Optional[int] = None,
+        dt_type: Optional[Literal[1, 2, 3, 4]] = None,
+        e_price_offer: Optional[bool] = None,
+        status_id: Optional[int] = None,
+        status_text: Optional[str] = None,
+        date_start: Optional[str] = None,
+        date_end: Optional[str] = None,
+        province_plate: Optional[int] = None,
+        province_name: Optional[str] = None,
+        scope_id: Optional[int] = None,
+        scope_text: Optional[str] = None,
+        authority_id: Optional[int] = None,
+        parent_authority_code: Optional[str] = None,
+        top_authority_code: Optional[str] = None,
+        cookies: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Search Direct Procurements (Doğrudan Temin) via EKAP legacy endpoint.
+
+        Maps YeniIhaleAramaData.ashx (metot=dtAra) response to readable fields.
+        Dates accept YYYY-MM-DD and are converted to DD.MM.YYYY.
+        """
+        if page_index < 1:
+            page_index = 1
+        params = {
+            "metot": "dtAra",
+            "arananIfade": search_text or "",
+            "dtAciklama": 1 if search_in_description else 0,
+            "dtAdi": 1 if search_in_name else 0,
+            "dtBilgiSecim": 1 if search_in_info else 0,
+            "orderBy": order_by,
+            "pageIndex": page_index,
+        }
+        # Handle DT year: endpoint expects two-digit year (e.g., 25 for 2025)
+        if year is not None:
+            params["dtnYil"] = (year % 100) if year > 99 else year
+        # Handle DT number (dtnSayi) explicitly or parse from dt_no like '25DT1493794'
+        if dt_number is not None:
+            params["dtnSayi"] = dt_number
+        elif dt_no:
+            import re
+            m = re.match(r"^(\d{2})DT(\d+)$", dt_no.strip(), re.IGNORECASE)
+            if m:
+                if "dtnYil" not in params:
+                    try:
+                        params["dtnYil"] = int(m.group(1))
+                    except Exception:
+                        pass
+                try:
+                    params["dtnSayi"] = int(m.group(2))
+                except Exception:
+                    pass
+            else:
+                # Fallback: keep numeric content as dtnSayi if looks like number
+                digits = re.sub(r"\D", "", dt_no)
+                if digits:
+                    try:
+                        params["dtnSayi"] = int(digits)
+                    except Exception:
+                        pass
+        if dt_type is not None:
+            params["dtTuru"] = dt_type
+        if e_price_offer is not None:
+            # Use boolean query string to match legacy endpoint expectations
+            params["eihale"] = "true" if e_price_offer else "false"
+        # Map status text if provided and id not set
+        if status_id is None and status_text:
+            st_lower = status_text.strip().lower()
+            # direct numeric string support
+            if st_lower.isdigit():
+                try:
+                    status_id = int(st_lower)
+                except Exception:
+                    status_id = None
+            if status_id is None:
+                # build lowercase map
+                _status_by_text = {v.lower(): k for k, v in DIRECT_PROCUREMENT_STATUSES.items()}
+                status_id = _status_by_text.get(st_lower)
+            if status_id is None:
+                status_id = DIRECT_PROCUREMENT_STATUS_ALIASES.get(st_lower)
+        if status_id is not None:
+            params["dtDurum"] = status_id
+        if date_start:
+            params["dtTarihiBaslangic"] = self._format_date_for_api(date_start)
+        if date_end:
+            params["dtTarihiBitis"] = self._format_date_for_api(date_end)
+        # Map province name to plate if provided
+        if province_plate is None and province_name:
+            plate = NAME_TO_PLATE.get(province_name.strip().upper())
+            if plate is not None:
+                province_plate = plate
+        if province_plate is not None:
+            params["ilID"] = province_plate
+        # Map scope text if provided and id not set
+        if scope_id is None and scope_text:
+            sc_lower = scope_text.strip().lower()
+            if sc_lower.isdigit():
+                try:
+                    scope_id = int(sc_lower)
+                except Exception:
+                    scope_id = None
+            if scope_id is None:
+                _scope_by_text = {v.lower(): k for k, v in DIRECT_PROCUREMENT_SCOPES.items()}
+                scope_id = _scope_by_text.get(sc_lower)
+            if scope_id is None:
+                scope_id = DIRECT_PROCUREMENT_SCOPE_ALIASES.get(sc_lower)
+        if scope_id is not None:
+            params["dtKapsami"] = scope_id
+        if authority_id is not None:
+            params["idareId"] = authority_id
+        if parent_authority_code is not None:
+            params["ustIdareKod"] = parent_authority_code
+        if top_authority_code is not None:
+            params["enUstIdareKod"] = top_authority_code
+
+        try:
+            data = await self._make_get_request_full_url(self.direct_procurement_url, params=params, cookies=cookies)
+            items = data.get("yeniDogrudanTeminAramaResultList", [])
+            results: List[Dict[str, Any]] = []
+            for it in items:
+                tcode = self._safe_int(it.get("E4"))
+                results.append({
+                    "dt_no": it.get("E1"),
+                    "title": it.get("E2"),
+                    "authority": it.get("E3"),
+                    "type": {
+                        "code": tcode,
+                        "description": DIRECT_PROCUREMENT_TYPES.get(tcode, "Bilinmiyor")
+                    },
+                    "due_datetime": it.get("E7"),
+                    "announcement_date": it.get("E8"),
+                    "detail_token": it.get("E10"),
+                    "announcement_token": it.get("E11"),
+                    "province_plate": self._safe_int(it.get("E12")),
+                    "has_announcement": bool(it.get("E13")),
+                    "has_document": bool(it.get("E14"))
+                })
+            return {
+                "direct_procurements": results,
+                "returned_count": len(results),
+                "page_index": page_index,
+                "search_params": {
+                    "search_text": search_text,
+                    "year": year,
+                    "dt_no": dt_no,
+                    "dt_type": dt_type,
+                    "province_plate": province_plate
+                }
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "error": f"Direct procurement request failed with status {e.response.status_code}",
+                "message": str(e)
+            }
+        except Exception as e:
+            return {
+                "error": "Direct procurement request failed",
+                "message": str(e)
+            }
+
+    def _safe_int(self, value: Any) -> Optional[int]:
+        try:
+            return int(value) if value is not None and value != "" else None
+        except Exception:
+            return None
+
+    async def get_direct_procurement_details(
+        self,
+        dogrudan_temin_id: str,
+        idare_id: str,
+        cookies: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Get details for a specific Direct Procurement (Doğrudan Temin).
+
+        Calls YeniIhaleAramaData.ashx with metot=dtDetayGetir using the encrypted
+        tokens returned by the list endpoint (E10=dogrudanTeminId, E11=idareId).
+        """
+        params = {
+            "metot": "dtDetayGetir",
+            "dogrudanTeminId": dogrudan_temin_id,
+            "idareId": idare_id,
+        }
+        try:
+            data = await self._make_get_request_full_url(self.direct_procurement_url, params=params, cookies=cookies)
+            detail = data.get("dogrudanTeminDetayResult", {})
+            if not detail:
+                return {"error": "No details found", "success": False}
+
+            dt_info = detail.get("DogrudanTeminBilgileri", {})
+            authority_info = detail.get("IdareBilgileri", {})
+            ilan_bilgileri = detail.get("IlanBilgileri", {})
+            contract_info = detail.get("SozlesmeBilgileri", {})
+
+            # Flatten announcement lists into a single list with categories
+            announcements: List[Dict[str, Any]] = []
+            def append_anns(items: Optional[List[Dict[str, Any]]], category: str):
+                if not items:
+                    return
+                for it in items:
+                    announcements.append({
+                        "category": category,
+                        "date": it.get("IlanTarihi"),
+                        "type_code": it.get("IlanTipi"),
+                        "enc_id": it.get("EncIlanId")
+                    })
+
+            append_anns(ilan_bilgileri.get("DogrudanTeminIlanBilgisiList"), "ilan")
+            append_anns(ilan_bilgileri.get("DuzeltmeIlanBilgisiList"), "duzeltme")
+            append_anns(ilan_bilgileri.get("IptalIlanBilgisiList"), "iptal")
+            append_anns(ilan_bilgileri.get("SonucIlanBilgisiList"), "sonuc")
+
+            result = {
+                "basic": {
+                    "dt_no": dt_info.get("Dtn"),
+                    "name": dt_info.get("IsinAdi"),
+                    "type": dt_info.get("Turu"),
+                    "scope_article": dt_info.get("YasaKapsamiTeminMaddesi"),
+                    "kismi_teklif": dt_info.get("KismiTeklif"),
+                    "parts_count": dt_info.get("KisimSayisi"),
+                    "okas_codes": dt_info.get("BransKodList", []),
+                    "announcement_form": dt_info.get("IlaninSekli"),
+                    "dt_datetime": dt_info.get("DtTarihSaati"),
+                    "status": dt_info.get("DtDurumu"),
+                    "cancel_reason": dt_info.get("IptalNedeni"),
+                    "cancel_date": dt_info.get("IptalTarihi"),
+                    "will_announce": dt_info.get("DogrudanTeminDuyurusuYapilacakMi"),
+                    "is_electronic": dt_info.get("EIhale"),
+                    "has_contract_draft": dt_info.get("DogrudanTeminSozlesmeTasarisiVarMi"),
+                    "exception_basis": dt_info.get("IstisnaAliminDayanagi"),
+                    "regulation_basis": dt_info.get("MevzuatDayanagi"),
+                },
+                "authority": {
+                    "top_authority": authority_info.get("EnUstIdare"),
+                    "parent_authority": authority_info.get("UstIdare"),
+                    "name": authority_info.get("Idare"),
+                    "province": authority_info.get("Ili"),
+                },
+                "announcements": announcements,
+                "contracts": contract_info.get("SozlesmeBilgisiList", []),
+                "tokens": {
+                    "dogrudanTeminId": dogrudan_temin_id,
+                    "idareId": idare_id
+                },
+                "success": True
+            }
+            return result
+        except httpx.HTTPStatusError as e:
+            return {
+                "error": f"Direct procurement detail failed with status {e.response.status_code}",
+                "message": str(e),
+                "success": False
+            }
+        except Exception as e:
+            return {
+                "error": "Direct procurement detail request failed",
                 "message": str(e),
                 "success": False
             }
