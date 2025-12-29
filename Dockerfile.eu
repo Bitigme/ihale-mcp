@@ -1,0 +1,18 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Sadece Avrupa sunucusu için gerekli dosyaları kopyala
+COPY pyproject.toml requirements.txt ./
+COPY ted_mcp.py ./
+COPY ted_api_client.py ./
+COPY ted_models.py ./
+
+# Sadece Avrupa sunucusunun bağımlılıklarını kur
+RUN uv pip install --system "fastmcp>=2.10.6" "pydantic>=2.11.7" "httpx>=0.28.1"
+
+CMD ["python", "-u", "ted_mcp.py"] 

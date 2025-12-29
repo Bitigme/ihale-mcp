@@ -10,15 +10,27 @@ dependencies = [
     "markitdown>=0.1.2",
     "pydantic>=2.11.7",
     "typing-extensions>=4.14.1",
+    # Google Sheets export (service account)
+    "google-api-python-client>=2.120.0",
+    "google-auth>=2.28.0",
+    "google-auth-httplib2>=0.2.0",
 ]
 
 
 [project.scripts]
 ihale-mcp = "ihale_mcp:main"
+maps-mcp = "maps_mcp:main"
 
 
 [tool.setuptools]
-py-modules = ["ihale_mcp", "ihale_client", "ihale_models"]
+py-modules = [
+    "ihale_mcp",
+    "ihale_client",
+    "ihale_models",
+    "maps_mcp",
+    "google_places_client",
+    "leads_models",
+]
 
 [dependency-groups]
 dev = [

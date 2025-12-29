@@ -1,0 +1,46 @@
+version: "3.3"
+
+services:
+  ihale-tr:
+    build:
+      context: .
+      dockerfile: Dockerfile  # Türkiye sunucusu için mevcut Dockerfile'ı kullan
+    container_name: ihale-sunucu-tr
+    ports:
+      - "7860:7860"  # Türkiye sunucusunu 7860 portunda yayınla
+    stdin_open: true # 5ire'ın attach olabilmesi için
+    tty: true
+
+  ihale-eu:
+    build:
+      context: .
+      dockerfile: Dockerfile.eu
+    container_name: ihale-sunucu-eu
+    ports:
+      - "7861:7860"  # Avrupa sunucusunu 7861 portunda yayınla
+    stdin_open: true # 5ire'ın attach olabilmesi için
+    tty: true 
+
+  maps:
+    build:
+      context: .
+      dockerfile: Dockerfile.maps
+    container_name: maps-sunucu
+    ports:
+      - "7862:7860"
+    environment:
+      # ZORUNLU
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY}
+      # Google Sheets export (opsiyonel)
+      # docker-compose v1 uyumluluğu için default değerleri burada sabitliyoruz
+      GOOGLE_SHEETS_AUTO_EXPORT: "true"
+      # Tek sayfa kullanımı (keyword'e göre ayrı sayfa yok)
+      GOOGLE_SHEETS_SPREADSHEET_ID: ${GOOGLE_SHEETS_SPREADSHEET_ID}
+      GOOGLE_SHEETS_SHEET_NAME: "Leads"
+      # sabit sekme adı vermiyoruz; keyword'e göre seçilecek
+      GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE: /run/secrets/sa.json
+    volumes:
+      # host'taki servis hesabı JSON yolunu verin (read-only)
+      - /home/dronmarket/Documents/ihale-mcp/secrets/sa.json:/run/secrets/sa.json:ro
+    stdin_open: true
+    tty: true

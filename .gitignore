@@ -202,3 +202,8 @@ generate_correct_mapping.py
 province_ids.json
 verify_mapping.py
 AGENTS.md
+
+# Secrets (Google service account keys etc.)
+secrets/
+*.service-account.json
+crested-drive-475108-q2-39aac07b2ab1.json

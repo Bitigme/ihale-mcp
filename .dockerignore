@@ -1,0 +1,11 @@
+# Git ve proje dosyaları
+.git
+.gitignore
+
+# Sanal ortam klasörü
+.venv
+__pycache__
+*.pyc
+
+# Docker dosyaları
+.dockerignore 

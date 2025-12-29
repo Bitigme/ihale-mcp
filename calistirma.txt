@@ -1,0 +1,22 @@
+        sudo docker rm -f maps-sunucu || true        
+        sudo docker build -t maps-mcp:latest -f Dockerfile.maps .        
+          sudo 
+          docker run -d --name maps-sunucu -e GOOGLE_MAPS_API_KEY='AIzaSyCdPfqya2VQKlsvgxRLhBZ6LnuHi6Fcq4k' -i maps-mcp:latest
+
+
+
+
+          ----------------------------
+
+
+
+          sudo docker rm -f maps-sunucu
+          sudo docker build -t maps-mcp:latest -f Dockerfile.maps .
+          sudo docker run -d --name maps-sunucu \
+            -e GOOGLE_MAPS_API_KEY="AIzaSyCdPfqya2VQKlsvgxRLhBZ6LnuHi6Fcq4k" \
+            -e GOOGLE_SHEETS_AUTO_EXPORT="true" \
+            -e GOOGLE_SHEETS_SPREADSHEET_ID="1vLuti92v4KCFZknJoNo4x2_NKf2GiGUTaPC_mYgN0Fc" \
+            -e GOOGLE_SHEETS_SHEET_NAME="Leads" \
+            -e GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE=/run/secrets/sa.json \
+            -v /home/dronmarket/Documents/ihale-mcp/secrets/sa.json:/run/secrets/sa.json:ro \
+            -i maps-mcp:latest

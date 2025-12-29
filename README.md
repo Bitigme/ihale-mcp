@@ -15,6 +15,8 @@ Bu proje, Türkiye'deki kamu ihalelerine (`ekap.kik.gov.tr`) erişimi kolaylaşt
 * Claude Desktop uygulaması ile kolay entegrasyon.
 * İhale MCP, [5ire](https://5ire.app) gibi Claude Desktop haricindeki MCP istemcilerini de destekler.
 
+> Yeni: Google Maps/Places için bağımsız MCP sunucusu eklendi (`maps_mcp.py`).
+
 ---
 🚀 **Claude Haricindeki Modellerle Kullanmak İçin Çok Kolay Kurulum (Örnek: 5ire için)**
 
@@ -81,6 +83,136 @@ Bu FastMCP sunucusu LLM modelleri için aşağıdaki araçları sunar:
     * **Döndürdüğü Değer**: Kurum ID'leri, isimleri ve hiyerarşik bilgileri
 
 * **`get_recent_tenders`**: Son N gündeki ihaleleri getirir.
+* **`find_business_leads`**: Google Maps/Places Text Search kullanarak anahtar kelime + konum ile işletmeleri bulur ve satış lead listesine dönüştürür.
+    * **Parametreler**: `keyword`, `location_text`, `radius_meters`, `limit`, `include_details`, `min_rating`, `min_user_ratings_total`, `types_include`, `types_exclude`, `require_phone_or_website`, `only_open_now`, `business_status_in`, `output_format` (json|csv), `csv_columns`, `dedupe_by` (place_id|name_address)
+    * **JSON Çıktı**: `leads[]` (name, formatted_address, lat, lng, place_id, types, rating, user_ratings_total, business_status, phone, phone_intl, website, open_now), `total`, `query`, `location`, `filters`
+    * **CSV Çıktı**: `csv` alanı (string), `columns`, `total`, `content_type`
+
+### Yapılandırma
+
+Çalıştırmadan önce bir Google Maps API anahtarı tanımlayın:
+
+```bash
+export GOOGLE_MAPS_API_KEY="<YOUR_KEY>"
+```
+---
+
+## Google Maps MCP Sunucusu (Maps)
+
+Bağımsız bir konteyner olarak çalışır. Örnek Docker komutu:
+
+```bash
+sudo docker run -d \
+  --name maps-sunucu \
+  -p 7862:7860 \
+  -e GOOGLE_MAPS_API_KEY="<YOUR_KEY>" \
+  -i $(sudo docker build -q -f Dockerfile.maps .)
+```
+
+Kullanılabilir araçlar:
+
+- `find_business_leads`: Anahtar kelime + konum ile işletmeleri bulur.
+  - Parametreler: `keyword`, `location_text`, `radius_meters`, `limit`, `include_details`, `min_rating`, `min_user_ratings_total`, `types_include`, `types_exclude`, `require_phone_or_website`, `only_open_now`, `business_status_in`, `output_format` (json|csv), `csv_columns`, `dedupe_by` (place_id|name_address)
+  - Çıktı: JSON veya CSV (string + columns + content_type)
+
+### Google Sheets’e Otomatik Aktarma (Opsiyonel)
+
+`find_business_leads` çıktısını arama yapar yapmaz Google Sheets’e satır satır yazdırabilirsiniz.
+
+#### 1) Google Cloud tarafında yapmanız gerekenler
+
+- **Google Sheets API’yi etkinleştirin**: Google Cloud Console → APIs & Services → Library → “Google Sheets API” → Enable.
+- **Servis hesabı oluşturun**: IAM & Admin → Service Accounts → Create.
+- **JSON anahtar indirin**: Servis hesabı → Keys → Add key → Create new key → JSON.
+- **Sheet’i servis hesabıyla paylaşın**: Hedef Google Sheet’i açın → Share → servis hesabı e-postasını (örn. `xxx@yyy.iam.gserviceaccount.com`) **Editor** olarak ekleyin.
+
+#### 2) Sunucuda (env) ayarlayacağınız değişkenler
+
+Servis hesabını iki şekilde verebilirsiniz:
+
+- **Dosya ile (önerilen)**:
+
+```bash
+export GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE="/path/to/service-account.json"
+```
+
+- **JSON içeriği ile** (tek satır JSON string):
+
+```bash
+export GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON='{"type":"service_account", ... }'
+```
+
+Hedef sheet bilgileri:
+
+```bash
+export GOOGLE_SHEETS_SPREADSHEET_ID="<SPREADSHEET_ID>"
+export GOOGLE_SHEETS_SHEET_NAME="Leads"   # opsiyonel (default: Leads)
+```
+
+> `SPREADSHEET_ID`, sheet URL’sindeki `/d/<ID>/` kısmıdır.
+
+Otomatik yazdırmayı her aramada açmak için (tool parametresi vermeden):
+
+```bash
+export GOOGLE_SHEETS_AUTO_EXPORT="true"
+```
+
+#### 5 sekmeye (tab) keyword'e göre otomatik yazdırma
+
+Sheet’inizde aşağıdaki tab isimleri varsa (yoksa otomatik oluşturulur):
+- `TARIM_MAKINA_BAYI`
+- `ILAC_BAYI`
+- `ZIRAAT_ODALARI`
+- `CIFTCI_KOOPARATIFI`
+- `GENEL_TARIM` (fallback)
+
+Keyword’e göre otomatik yönlendirmeyi açın:
+
+```bash
+export GOOGLE_SHEETS_AUTO_ROUTE_BY_KEYWORD="true"
+```
+
+Eşleşme kurallarını isterseniz env ile özelleştirebilirsiniz (JSON dict: substring -> tab adı):
+
+```bash
+export GOOGLE_SHEETS_KEYWORD_TAB_MAP='{
+  "tarım makina": "TARIM_MAKINA_BAYI",
+  "ilac bayi": "ILAC_BAYI",
+  "ziraat odaları": "ZIRAAT_ODALARI",
+  "çiftçi kooperatifi": "CIFTCI_KOOPARATIFI",
+  "genel tarım": "GENEL_TARIM"
+}'
+```
+
+#### 3) Tool çağrısında açmanız gereken parametreler
+
+`find_business_leads` çağrısına şunları ekleyin:
+
+- `export_to_google_sheets=true`
+- (opsiyonel) `google_sheets_spreadsheet_id="..."`
+- (opsiyonel) `google_sheets_sheet_name="Leads"`
+- (opsiyonel) `google_sheets_include_raw_json=true` (her satıra raw JSON da yazar)
+
+Başarılı olursa response içinde `google_sheets.ok=true` ve `updated_rows` gibi alanlar döner; hata olursa `google_sheets.ok=false` + `error` döner (arama sonucu yine döner).
+
+#### 4) Docker ile çalıştırırken örnek
+
+Servis hesabı JSON’unu konteynıra “read-only” mount edin:
+
+```bash
+sudo docker run -d --name maps-sunucu \
+  -p 7862:7860 \
+  -e GOOGLE_MAPS_API_KEY="<YOUR_KEY>" \
+  -e GOOGLE_SHEETS_SPREADSHEET_ID="<SPREADSHEET_ID>" \
+  -e GOOGLE_SHEETS_SHEET_NAME="Leads" \
+  -e GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE="/run/secrets/sa.json" \
+  -v "/path/to/service-account.json:/run/secrets/sa.json:ro" \
+  -i $(sudo docker build -q -f Dockerfile.maps .)
+```
+
+
+> Google Cloud Console'da Places API ve Geocoding API'yi etkinleştirin ve kotaları göz önünde bulundurun.
+
     * **Parametreler**: `days` (1-30), `tender_types`, `limit`
     * **Döndürdüğü Değer**: Yakın tarihli ihale listesi
 
