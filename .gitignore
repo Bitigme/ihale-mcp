@@ -202,7 +202,7 @@ generate_correct_mapping.py
 province_ids.json
 verify_mapping.py
 AGENTS.md
-
+*.AppImage
 # Secrets (Google service account keys etc.)
 secrets/
 *.service-account.json

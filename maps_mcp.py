@@ -12,14 +12,17 @@ import json
 from typing import Optional, List, Literal, Dict, Any
 from fastmcp import FastMCP
 from google_places_client import GooglePlacesClient
-from google_sheets_writer import GoogleSheetsAppender, leads_to_sheet_rows
+from google_sheets_writer import GoogleSheetsAppender, leads_to_sheet_rows, _extract_il_from_location_text, _parse_il_ilce, _normalize_il_name, _parse_il_from_address_only
 
 
 app = FastMCP(
     name="maps-mcp",
     instructions=(
-        "Use find_business_leads to search Google Maps/Places for businesses "
-        "using a keyword and a location text, then convert to structured lead lists."
+        "Use find_business_leads tool to search Google Maps/Places for businesses "
+        "using a keyword (e.g., 'tarım makinaları bayileri', 'ilaç bayileri') and a location text (e.g., 'Sinop', 'Samsun', 'İstanbul'). "
+        "The tool automatically filters results to only include businesses from the specified location. "
+        "Results are automatically exported to Google Sheets if GOOGLE_SHEETS_AUTO_EXPORT is enabled. "
+        "ALWAYS use this tool when the user asks to search for businesses, dealers, or companies in a specific location."
     ),
 )
 
@@ -50,6 +53,18 @@ async def find_business_leads(
 ) -> Dict[str, Any]:
     """
     Google Maps/Places Text Search ile işletme arayıp satış lead listesine dönüştürür.
+    
+    Bu tool, belirli bir lokasyonda (il, ilçe, şehir) belirli bir anahtar kelime ile
+    işletme araması yapar ve sonuçları Google Sheets'e otomatik olarak aktarır.
+    
+    Örnek kullanım:
+    - keyword: "tarım makinaları bayileri"
+    - location_text: "Sinop" veya "Samsun" veya "İstanbul"
+    
+    Sonuçlar otomatik olarak Google Sheets'e yazılır (GOOGLE_SHEETS_AUTO_EXPORT=true ise).
+    
+    ÖNEMLİ: Bu tool'u kullanarak herhangi bir il/şehir için işletme araması yapabilirsiniz.
+    Tool, sonuçları filtreler ve sadece belirtilen lokasyona ait sonuçları döndürür.
     """
 
     if limit < 1:
@@ -90,8 +105,49 @@ async def find_business_leads(
             "open_now": (det.get("opening_hours") or {}).get("open_now"),
         })
 
+    # Extract il from location_text for filtering
+    location_il = _extract_il_from_location_text(location_text) if location_text else None
+    
+    # Import postal code functions for strict filtering
+    from google_sheets_writer import _extract_postal_code_from_address, _get_il_from_postal_code
+    
     # Filters
     def pass_filters(item: Dict[str, Any]) -> bool:
+        # KRİTİK: İl filtresi - location_text'teki il ile formatted_address'teki il eşleşmeli
+        if location_il:
+            address = item.get("formatted_address")
+            if address:
+                loc_il_norm = _normalize_il_name(location_il)
+                
+                # 1. POSTA KODU KONTROLÜ (en güvenilir yöntem - ÖNCELİKLİ)
+                postal_code = _extract_postal_code_from_address(address)
+                if postal_code:
+                    postal_il = _get_il_from_postal_code(postal_code)
+                    if postal_il:
+                        postal_il_norm = _normalize_il_name(postal_il)
+                        # Posta kodu il'i location_text ile eşleşmiyorsa → FİLTRELE
+                        if loc_il_norm != postal_il_norm:
+                            return False
+                    else:
+                        # Posta kodu var ama il tespit edilemedi → FİLTRELE (güvenlik için)
+                        return False
+                else:
+                    # Posta kodu yok → adres içinden parse et ve kontrol et
+                    # 2. ADRES İÇİNDEN İL PARSE ET (location_text olmadan)
+                    parsed_il_raw = _parse_il_from_address_only(address)
+                    if parsed_il_raw:
+                        parsed_il_norm = _normalize_il_name(parsed_il_raw)
+                        # Parse edilen il location_text ile eşleşmiyorsa → FİLTRELE
+                        if loc_il_norm != parsed_il_norm:
+                            return False
+                    else:
+                        # İl parse edilemedi → adres içinde string kontrolü yap
+                        address_lower = address.lower()
+                        # Normalize edilmiş il adını adres içinde ara
+                        if loc_il_norm not in address_lower:
+                            # İl adı adres içinde yoksa → FİLTRELE
+                            return False
+        
         if min_rating is not None:
             r = item.get("rating")
             if r is None or r < min_rating:  # type: ignore[operator]

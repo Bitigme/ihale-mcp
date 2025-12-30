@@ -66,7 +66,8 @@ class GoogleSheetsAppender:
         sheet_name: Optional[str] = None,
     ) -> None:
         self.spreadsheet_id = spreadsheet_id or os.environ.get("GOOGLE_SHEETS_SPREADSHEET_ID")
-        self.sheet_name = sheet_name or os.environ.get("GOOGLE_SHEETS_SHEET_NAME") or "Leads"
+        # HER ZAMAN "Leads" sayfasına yaz - yeni sayfa oluşturma
+        self.sheet_name = "Leads"
         if not self.spreadsheet_id:
             raise RuntimeError("spreadsheet_id verilmedi (GOOGLE_SHEETS_SPREADSHEET_ID).")
 
@@ -94,8 +95,8 @@ class GoogleSheetsAppender:
             return []
         return values[0] or []
 
-    def ensure_sheet_exists(self) -> None:
-        """Create sheet tab if it does not exist."""
+    def _check_sheet_exists(self) -> bool:
+        """Check if sheet tab exists. Returns True if exists, False otherwise."""
         meta = (
             self._service.spreadsheets()
             .get(spreadsheetId=self.spreadsheet_id, fields="sheets(properties(title))")
@@ -105,23 +106,15 @@ class GoogleSheetsAppender:
             (s.get("properties") or {}).get("title")
             for s in (meta.get("sheets") or [])
         }
-        if self.sheet_name in existing:
-            return
-        (
-            self._service.spreadsheets()
-            .batchUpdate(
-                spreadsheetId=self.spreadsheet_id,
-                body={
-                    "requests": [
-                        {"addSheet": {"properties": {"title": self.sheet_name}}}
-                    ]
-                },
-            )
-            .execute()
-        )
+        return self.sheet_name in existing
 
     def ensure_header(self, header: Sequence[str]) -> None:
-        self.ensure_sheet_exists()
+        """Ensure header exists. Raises RuntimeError if sheet does not exist."""
+        if not self._check_sheet_exists():
+            raise RuntimeError(
+                f'Google Sheets sayfası "{self.sheet_name}" bulunamadı. '
+                f'Lütfen önce "{self.sheet_name}" adında bir sayfa oluşturun.'
+            )
         existing = [str(x) for x in self._get_first_row() if x is not None]
         if existing:
             return
@@ -139,7 +132,12 @@ class GoogleSheetsAppender:
         )
 
     def append_rows(self, rows: Sequence[Sequence[Any]]) -> GoogleSheetsWriteResult:
-        self.ensure_sheet_exists()
+        """Append rows to sheet. Raises RuntimeError if sheet does not exist."""
+        if not self._check_sheet_exists():
+            raise RuntimeError(
+                f'Google Sheets sayfası "{self.sheet_name}" bulunamadı. '
+                f'Lütfen önce "{self.sheet_name}" adında bir sayfa oluşturun.'
+            )
         rng = f"{self.sheet_name}!A1"
         resp = (
             self._service.spreadsheets()
@@ -243,11 +241,76 @@ def _extract_il_from_location_text(location_text: str) -> Optional[str]:
     return loc_clean.strip() if loc_clean else None
 
 
+def _parse_il_from_address_only(address: Optional[str]) -> Optional[str]:
+    """
+    Parse il (province) from address ONLY, without location_text dependency.
+    Used for strict filtering - returns the actual il in the address.
+    """
+    if not address:
+        return None
+    
+    # POSTA KODU İLE İL TESPİTİ (en güvenilir - ÖNCELİKLİ)
+    postal_code = _extract_postal_code_from_address(address)
+    if postal_code:
+        postal_il = _get_il_from_postal_code(postal_code)
+        if postal_il:
+            return postal_il
+    
+    # Adres içinden il parse et
+    parts = [p.strip() for p in address.split(",")]
+    if not parts:
+        return None
+    
+    # Son kısmı al (genelde il burada)
+    last_part = parts[-1].strip()
+    
+    # "Türkiye" kelimesini temizle
+    last_part = last_part.replace("Türkiye", "").replace("turkey", "").strip()
+    
+    # Posta kodunu kaldır (örn: "55020 Samsun" -> "Samsun")
+    last_part = re.sub(r'\d{5}\s*', '', last_part).strip()
+    
+    if not last_part:
+        # Son kısım boşsa, bir önceki kısmı kontrol et
+        if len(parts) >= 2:
+            second_last = parts[-2].strip()
+            # Posta kodu içermiyorsa ve kısa bir isimse, il olabilir
+            if not re.search(r'\d{5}', second_last) and len(second_last.split()) <= 3:
+                last_part = second_last
+    
+    # "/" ile split et (İlçe/İl formatı)
+    if "/" in last_part:
+        ilce_il = [p.strip() for p in last_part.split("/")]
+        if len(ilce_il) >= 2:
+            parsed_il = ilce_il[1]
+        elif len(ilce_il) == 1:
+            parsed_il = ilce_il[0]
+        else:
+            parsed_il = last_part
+    else:
+        parsed_il = last_part
+    
+    # Temizle ve normalize et
+    if parsed_il:
+        parsed_il = parsed_il.strip()
+        # Bilinen il isimlerini kontrol et (POSTAL_CODE_TO_IL'deki değerlerle eşleş)
+        parsed_il_norm = _normalize_il_name(parsed_il)
+        # POSTAL_CODE_TO_IL'deki değerlerle eşleşen bir il var mı?
+        for il_name in POSTAL_CODE_TO_IL.values():
+            if _normalize_il_name(il_name) == parsed_il_norm:
+                return il_name  # Normalize edilmiş haliyle döndür
+        
+        # Eşleşme yoksa, yine de parse edilen il'i döndür (belki yeni bir il ismi)
+        return parsed_il
+    
+    return None
+
+
 def _parse_il_ilce(address: Optional[str], location_text: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """
     Parse il (province) and ilçe (district) from formatted_address.
-    CRITICAL: Validates il against location_text - if they don't match, uses location_text's il.
-    This prevents wrong il/ilce combinations (e.g., "Sinop" with "Adapazarı" district).
+    CRITICAL: Validates il against location_text using postal code - if they don't match, uses location_text's il.
+    This prevents wrong il/ilce combinations (e.g., "Samsun" search returning "Malatya" results).
     """
     # Önce location_text'ten il bilgisini çıkar
     location_il = None
@@ -257,6 +320,12 @@ def _parse_il_ilce(address: Optional[str], location_text: Optional[str] = None) 
     if not address:
         # Adres yoksa, location_text'ten il döndür
         return location_il, None
+    
+    # POSTA KODU İLE İL DOĞRULAMASI (en güvenilir yöntem)
+    postal_code = _extract_postal_code_from_address(address)
+    postal_il = None
+    if postal_code:
+        postal_il = _get_il_from_postal_code(postal_code)
     
     # Adres içinden il/ilçe parse et
     parts = [p.strip() for p in address.split(",")]
@@ -272,34 +341,58 @@ def _parse_il_ilce(address: Optional[str], location_text: Optional[str] = None) 
         ilce_il = [p.strip() for p in last_part.split("/")]
         if len(ilce_il) >= 2:
             parsed_il = ilce_il[1]
-            parsed_ilce = ilce_il[0]
+            # İlçe'yi temizle (posta kodu varsa kaldır)
+            parsed_ilce = re.sub(r'^\d{5}\s*', '', ilce_il[0]).strip()
         elif len(ilce_il) == 1:
             parsed_il = ilce_il[0]
     else:
         # "/" yoksa, son kısmı il olarak kabul et
         parsed_il = last_part
     
-    # KRİTİK DOĞRULAMA: location_text'teki il ile adres içindeki il eşleşiyor mu?
+    # İlçe'yi adres içinden daha iyi çıkarmaya çalış (virgülle ayrılmış kısımlardan)
+    if not parsed_ilce and len(parts) >= 2:
+        # Son iki kısmı kontrol et (genelde "İlçe, İl" formatı)
+        # Örnek: "İlkadım, 55020 Samsun" -> parts[-2] = "İlkadım"
+        second_last = parts[-2].strip()
+        # Posta kodu içermiyorsa ve kısa bir isimse, ilçe olabilir
+        if not re.search(r'\d{5}', second_last) and len(second_last.split()) <= 3:
+            parsed_ilce = second_last
+    
+    # KRİTİK DOĞRULAMA: Posta kodu ile il kontrolü
     final_il = parsed_il
     final_ilce = parsed_ilce
     
-    if location_il and parsed_il:
+    if location_il:
         loc_il_norm = _normalize_il_name(location_il)
-        parsed_il_norm = _normalize_il_name(parsed_il)
         
-        # Eşleşmiyorsa, location_text'ten il kullan (adres yanlış olabilir)
-        if loc_il_norm not in parsed_il_norm and parsed_il_norm not in loc_il_norm:
-            # İl eşleşmiyor, location_text'ten il kullan
-            final_il = location_il
-            # İl yanlışsa, ilçe de muhtemelen yanlıştır - "-----" yap
-            final_ilce = None
+        # Posta kodu varsa, onu kullan (en güvenilir)
+        if postal_il:
+            postal_il_norm = _normalize_il_name(postal_il)
+            if loc_il_norm != postal_il_norm:
+                # Posta kodu il'i location_text ile eşleşmiyor - location_text'ten il kullan
+                final_il = location_il
+                final_ilce = None  # İl yanlışsa, ilçe de yanlıştır
+            else:
+                # Posta kodu eşleşiyor, parse edilen il'i kullan
+                if parsed_il:
+                    parsed_il_norm = _normalize_il_name(parsed_il)
+                    if loc_il_norm != parsed_il_norm:
+                        # Parse edilen il yanlış, location_text'ten al
+                        final_il = location_il
+                else:
+                    final_il = location_il
         else:
-            # İl eşleşiyor, dinamik ilçe doğrulaması yap (posta kodu ile)
-            if parsed_ilce and not _is_ilce_valid_for_il(parsed_ilce, final_il, address):
-                # Posta kodu il'e ait değil, ilçe geçersiz
-                final_ilce = None
+            # Posta kodu yok, parse edilen il ile location_text'i karşılaştır
+            if parsed_il:
+                parsed_il_norm = _normalize_il_name(parsed_il)
+                if loc_il_norm not in parsed_il_norm and parsed_il_norm not in loc_il_norm:
+                    # Eşleşmiyor, location_text'ten il kullan
+                    final_il = location_il
+                    final_ilce = None  # İl yanlışsa, ilçe de yanlıştır
+            else:
+                final_il = location_il
     
-    # İlçe doğrulaması (location_text yoksa bile, posta kodu ile)
+    # İlçe doğrulaması: Posta kodu ile kontrol et
     if final_il and final_ilce and address:
         if not _is_ilce_valid_for_il(final_ilce, final_il, address):
             final_ilce = None
@@ -307,30 +400,62 @@ def _parse_il_ilce(address: Optional[str], location_text: Optional[str] = None) 
     return final_il, final_ilce
 
 
+def _is_turkish_mobile(phone_clean: str) -> bool:
+    """
+    Check if phone number is Turkish mobile (cep telefonu).
+    Turkish mobile numbers: 05XX format, 11 digits total.
+    Valid mobile prefixes: 0505, 0506, 0507, 0530-0539, 0541-0546, 0549, 0551-0555
+    """
+    if len(phone_clean) != 11:
+        return False
+    if not phone_clean.startswith("05"):
+        return False
+    
+    # İlk 4 haneyi al (05XX)
+    prefix = phone_clean[:4]
+    # Geçerli cep telefonu prefix'leri
+    valid_mobile_prefixes = [
+        "0505", "0506", "0507",
+        "0530", "0531", "0532", "0533", "0534", "0535", "0536", "0537", "0538", "0539",
+        "0541", "0542", "0543", "0544", "0545", "0546",
+        "0549",
+        "0551", "0552", "0553", "0554", "0555",
+    ]
+    return prefix in valid_mobile_prefixes
+
+
+def _normalize_phone(phone: str) -> str:
+    """Normalize phone number: remove spaces, dashes, parentheses, +90 prefix."""
+    # +90 prefix'ini kaldır
+    phone = phone.replace("+90", "").replace("+ 90", "").strip()
+    # Boşluk, tire, parantez kaldır
+    phone = re.sub(r'[\s\-\(\)]', '', phone)
+    return phone
+
+
 def _split_phone(phone: Optional[str], phone_intl: Optional[str]) -> Tuple[str, str]:
     """
-    Split phone into Cep Telefonu (mobile) and Normal Telefon (landline).
-    Cep: +90 ile başlayan veya 05XX formatındaki numaralar
-    Normal: Diğerleri
+    Split phone into Cep Telefonu (mobile) and Normal Telefon (landline) according to Turkish standards.
+    Cep: 05XX format, 11 digits (Turkish mobile prefixes)
+    Normal: Diğerleri (sabit hat, kurumsal hatlar vb.)
     Returns "-----" if not found.
     """
     cep = ""
     normal = ""
     
-    # Önce phone_intl'e bak (uluslararası format)
+    # Önce phone_intl'e bak (uluslararası format: +90 ...)
     if phone_intl:
-        if phone_intl.startswith("+90") and len(phone_intl.replace(" ", "").replace("-", "")) >= 13:
-            # +90 ile başlayan ve uzun numara = cep
-            cep = phone_intl
+        phone_intl_clean = _normalize_phone(phone_intl)
+        if _is_turkish_mobile(phone_intl_clean):
+            cep = phone_intl  # Orijinal formatı koru
         else:
             normal = phone_intl
     
     # phone varsa ve cep boşsa, phone'a bak
     if phone and not cep:
-        phone_clean = phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
-        if phone_clean.startswith("05") and len(phone_clean) == 11:
-            # 05XX formatı ve 11 haneli = cep
-            cep = phone
+        phone_clean = _normalize_phone(phone)
+        if _is_turkish_mobile(phone_clean):
+            cep = phone  # Orijinal formatı koru
         else:
             normal = phone
     
